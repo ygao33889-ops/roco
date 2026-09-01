@@ -3,11 +3,14 @@ import json
 import os
 
 app = Flask(__name__)
-app.secret_key = "lock_world_pet_ledger_2026_s
-ecret"
+# 必须设置密钥，session才能正常工作
+app.secret_key = "lock_world_pet_ledger_2026_secret"
+# 管理员密码，自行修改
 ADMIN_PASSWORD = "123456"
+# 本地数据文件
 DATA_FILE = "pet_data.json"
 
+# ---------------------- 数据读写工具函数 ----------------------
 def load_data():
     if not os.path.exists(DATA_FILE):
         default = {
@@ -16,16 +19,17 @@ def load_data():
         }
         save_data(default)
         return default
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(DATA_FILE, "r", encoding="utf‑8") as f:
         return json.load(f)
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+    with open(DATA_FILE, "w", encoding="utf‑8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def require_admin():
     return session.get("admin", False)
 
+# ---------------------- 前端HTML ----------------------
 HTML = '''
 <!DOCTYPE html>
 <html lang="zh‑CN">
@@ -36,15 +40,16 @@ HTML = '''
 <style>
 *{box-sizing:border-box;font-family:"Microsoft Yahei",sans-serif;margin:0;padding:0;}
 html{scroll-behavior:smooth;}
-body{max-width:none;margin:0;padding:20px;background:#f0f2f5;min-height:100vh;}
+body{max-width:none;margin:0;padding:0;background:#f0f2f5;min-height:100vh;background-size:cover;background-position:center;background-attachment:fixed;}
 .landing{height:100vh;min-height:600px;display:flex;align-items:center;justify-content:center;background:#111;background-size:cover;background-position:center;position:relative;overflow:hidden;}
 .landing::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,.28);}
 .landing-content{position:relative;z-index:2;text-align:center;color:#fff;padding:30px;}
 .landing-content h1{font-size:48px;text-shadow:0 3px 12px rgba(0,0,0,.5);margin-bottom:16px;}
 .landing-content p{font-size:18px;margin-bottom:25px;text-shadow:0 2px 8px rgba(0,0,0,.5);}
 .enter-btn{padding:13px 34px;border:0;border-radius:30px;background:#fff;color:#16213e;font-size:17px;font-weight:bold;cursor:pointer;}
-.main-page{max-width:1100px;margin:0 auto;min-height:100vh;}
+.main-page{max-width:1100px;margin:0 auto;padding:20px;min-height:100vh;}
 .public-tip{background:rgba(255,255,255,.92);padding:12px 16px;border-radius:8px;margin-bottom:16px;color:#555;font-size:14px;}
+body::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.78);z-index:-1;}
 .pet-img{width:64px;height:64px;object-fit:contain;border-radius:10px;background:#f7f8fb;border:1px solid #eee;}
 .pet-card{display:flex;align-items:center;gap:14px;}
 .section-title{display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;}
@@ -97,7 +102,7 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     <button class="export-btn hidden" id="exportBtn" onclick="exportData()">导出备份</button>
 </div>
 
-<div class="readonly-tip hidden" id="readonlyTip">当前为游客模式：只能查看“大块头蛋”。输入管理员密码后才能编辑并查看精灵列表。</div>
+<div class="readonly-tip hidden" id="readonlyTip">当前为游客模式：只能查看“大块头蛋”。输入管理员密码后才能编辑并查看其他内容。</div>
 <div class="public-tip" id="publicTip">👀 游客模式：当前仅开放“大块头蛋”查看。</div>
 
 <div class="card hidden" id="petCard">
@@ -159,27 +164,22 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
 let isAdmin = false;
 function enterMain(){document.getElementById("mainPage").scrollIntoView({behavior:"smooth"});}
 function backToLanding(){document.getElementById("landing").scrollIntoView({behavior:"smooth"});}
-
-//游客视图：隐藏精灵列表、设置；大块头蛋一直可见
 function setPublicView(){
     document.getElementById("petCard").classList.add("hidden");
     document.getElementById("settingsCard").classList.add("hidden");
     document.getElementById("publicTip").classList.remove("hidden");
 }
-//管理员视图：解锁精灵列表、设置、所有编辑按钮
 function setAdminView(){
     document.getElementById("petCard").classList.remove("hidden");
     document.getElementById("settingsCard").classList.remove("hidden");
     document.getElementById("publicTip").classList.add("hidden");
 }
-
 async function api(url, method="GET", body=null){
     let opt = {method, headers:{"Content-Type":"application/json"}};
     if(body) opt.body = JSON.stringify(body);
     let res = await fetch(url, opt);
     return res.json();
 }
-
 async function login(){
     let pwd = document.getElementById("pwdInput").value;
     let r = await api("/api/login","POST",{password:pwd});
@@ -222,15 +222,6 @@ async function loadPets(){
         tb.appendChild(tr);
     });
 }
-async function loadEggs(){
-    let arr = await api("/api/big_eggs");
-    let tb = document.getElementById("eggTableBody"); tb.innerHTML = "";
-    arr.forEach((item,idx)=>{
-        let tr = document.createElement("tr");
-        let op = isAdmin ? `<td><button class="btn btn-danger" onclick="delEgg(${idx})">删除</button></td>` : "";
-        tr.innerHTML = `<td>${item}</td>${op}`; tb.appendChild(tr);
-    });
-}
 async function addPet(){
     if(!isAdmin) return;
     let name=document.getElementById("petName").value.trim(), sex=document.getElementById("petSex").value;
@@ -255,6 +246,15 @@ async function delPet(idx){
     if(!isAdmin||!confirm("确定删除？")) return;
     let r = await api("/api/pets/del","POST",{index:idx});
     if(r.ok) loadPets();
+}
+async function loadEggs(){
+    let arr = await api("/api/big_eggs");
+    let tb = document.getElementById("eggTableBody"); tb.innerHTML = "";
+    arr.forEach((item,idx)=>{
+        let tr = document.createElement("tr");
+        let op = isAdmin ? `<td><button class="btn btn-danger" onclick="delEgg(${idx})">删除</button></td>` : "";
+        tr.innerHTML = `<td>${item}</td>${op}`; tb.appendChild(tr);
+    });
 }
 async function addEgg(){
     if(!isAdmin) return;
@@ -314,33 +314,16 @@ function exportData(){
 async function importData(){
     let file = document.getElementById("importFile").files[0];
     if(!file){alert("请选择文件");return;}
-    try{
-        let text = await file.text();
-        let jsonData = JSON.parse(text);
-        let opt = {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body: JSON.stringify(jsonData)
-        };
-        let res = await fetch("/api/import", opt);
-        let r = await res.json();
-        if(r.ok){
-            alert("恢复成功");
-            loadPets();
-            loadEggs();
-        }
-        else alert("恢复失败："+r.msg);
-    }
-    catch(err){
-        console.error(err);
-        alert("文件解析失败！JSON格式错误。");
-    }
+    let text = await file.text();
+    let r = await api("/api/import","POST",JSON.parse(text));
+    if(r.ok){alert("恢复成功");loadPets();loadEggs();}
+    else alert("恢复失败："+r.msg);
 }
-window.onload = async ()=>{
+window.onload = ()=>{
     setPublicView();
-    await checkAuth();
-    loadEggs();
+    checkAuth();
     loadPets();
+    loadEggs();
     restoreBackground();
     setTimeout(restoreCollapse,100);
 };
@@ -396,13 +379,11 @@ def import_data():
     if not session.get("admin"):
         return jsonify({"ok": False, "msg": "无权限"}), 403
     try:
-        j = request.get_json(silent=True)
-        if j is None:
-            return jsonify({"ok": False, "msg": "不是合法JSON文件"})
+        j = request.get_json()
         if "pets" in j and "big_eggs" in j:
             save_data(j)
             return jsonify({"ok": True})
-        return jsonify({"ok": False, "msg": "文件格式不对，缺少pets或big_eggs字段"})
+        return jsonify({"ok": False, "msg": "文件格式不对"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
 
