@@ -1,15 +1,43 @@
 from flask import Flask, render_template_string, request, jsonify, session, Response
 import json
 import os
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
-
 # ========== 配置 ==========
 # 密码优先读环境变量，部署后在Render后台设置，更安全
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123456")
 DATA_FILE = "pet_data.json"
 # ==========================
+
+def migrate_eggs(d):
+    """将旧格式 big_eggs（字符串列表）迁移为结构化对象列表，并补全字段。
+    返回 (迁移后的数据, 是否发生了变更)。"""
+    if "big_eggs" not in d:
+        d["big_eggs"] = []
+        return d, True
+    new_eggs = []
+    changed = False
+    for item in d["big_eggs"]:
+        if isinstance(item, str):
+            # 旧格式：纯字符串 -> 转为对象，数量默认1
+            new_eggs.append({"info": item, "bonus": "", "weight": "", "count": 1})
+            changed = True
+        else:
+            # 新格式：补全可能缺失的字段
+            egg = {
+                "info": item.get("info", ""),
+                "bonus": item.get("bonus", ""),
+                "weight": item.get("weight", ""),
+                "count": item.get("count", 1),
+            }
+            new_eggs.append(egg)
+            if egg != item:
+                changed = True
+    if changed:
+        d["big_eggs"] = new_eggs
+    return d, changed
 
 def init_data():
     if not os.path.exists(DATA_FILE):
@@ -18,11 +46,24 @@ def init_data():
 
 def load_data():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        d = json.load(f)
+    d, changed = migrate_eggs(d)
+    if changed:
+        save_data(d)
+    return d
 
 def save_data(d):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
+
+def find_egg_index(d, info, bonus, weight):
+    """在 big_eggs 中查找 info+bonus+weight 三者完全相同的记录，返回下标，找不到返回 -1。"""
+    for i, egg in enumerate(d["big_eggs"]):
+        if (egg.get("info", "") == info
+                and egg.get("bonus", "") == bonus
+                and egg.get("weight", "") == weight):
+            return i
+    return -1
 
 init_data()
 
@@ -35,16 +76,7 @@ HTML = '''
 <title>洛克王国世界 精灵台账</title>
 <style>
 *{box-sizing:border-box;font-family:"Microsoft Yahei",sans-serif;margin:0;padding:0;}
-html{scroll-behavior:smooth;}
-body{max-width:none;margin:0;padding:0;background:#f0f2f5;min-height:100vh;background-size:cover;background-position:center;background-attachment:fixed;}
-.landing{height:100vh;min-height:600px;display:flex;align-items:center;justify-content:center;background:#111;background-size:cover;background-position:center;position:relative;overflow:hidden;}
-.landing::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,.28);}
-.landing-content{position:relative;z-index:2;text-align:center;color:#fff;padding:30px;}
-.landing-content h1{font-size:48px;text-shadow:0 3px 12px rgba(0,0,0,.5);margin-bottom:16px;}
-.landing-content p{font-size:18px;margin-bottom:25px;text-shadow:0 2px 8px rgba(0,0,0,.5);}
-.enter-btn{padding:13px 34px;border:0;border-radius:30px;background:#fff;color:#16213e;font-size:17px;font-weight:bold;cursor:pointer;}
-.main-page{max-width:1100px;margin:0 auto;padding:20px;min-height:100vh;}
-.public-tip{background:rgba(255,255,255,.92);padding:12px 16px;border-radius:8px;margin-bottom:16px;color:#555;font-size:14px;}
+body{max-width:1100px;margin:0 auto;padding:20px;background:#f0f2f5;min-height:100vh;background-size:cover;background-position:center;background-attachment:fixed;}
 body::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.78);z-index:-1;}
 .pet-img{width:64px;height:64px;object-fit:contain;border-radius:10px;background:#f7f8fb;border:1px solid #eee;}
 .pet-card{display:flex;align-items:center;gap:14px;}
@@ -55,7 +87,6 @@ body::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.78);
 .settings{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;}
 .settings label{font-size:13px;color:#555;}
 .bg-preview{width:46px;height:30px;object-fit:cover;border-radius:5px;border:1px solid #ddd;}
-
 h1{text-align:center;color:#1a1a2e;margin-bottom:20px;}
 .card{background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);}
 .card h2{color:#16213e;margin-bottom:16px;font-size:20px;border-left:4px solid #0f3460;padding-left:10px;}
@@ -78,18 +109,13 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
 .hidden{display:none !important;}
 .readonly-tip{background:#fff3cd;color:#856404;padding:10px 16px;border-radius:6px;margin-bottom:16px;font-size:14px;}
 .import-area{margin-top:12px;padding:12px;background:#f8f9fc;border-radius:8px;}
+.filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:10px 14px;background:#f8f9fc;border-radius:8px;}
+.filter-bar label{font-size:13px;color:#555;}
+.filter-bar select{min-width:120px;}
+.count-badge{display:inline-block;min-width:28px;text-align:center;background:#0f3460;color:#fff;border-radius:12px;padding:2px 8px;font-size:13px;font-weight:bold;}
 </style>
 </head>
 <body>
-<div class="landing" id="landing">
-  <div class="landing-content">
-    <h1>洛克王国世界</h1>
-    <p>精灵台账 · 大块头蛋记录</p>
-    <button class="enter-btn" onclick="enterMain()">进入主页面 ↓</button>
-  </div>
-</div>
-<div class="main-page" id="mainPage">
-<button class="btn" onclick="backToLanding()" style="margin-bottom:12px;">↑ 返回背景首页</button>
 <h1>洛克王国世界 精灵台账</h1>
 <div class="auth-bar">
     <span class="status" id="authStatus">🔒 只读模式</span>
@@ -98,10 +124,8 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     <button class="logout hidden" id="logoutBtn" onclick="logout()">退出</button>
     <button class="export-btn hidden" id="exportBtn" onclick="exportData()">导出备份</button>
 </div>
-
-<div class="readonly-tip hidden" id="readonlyTip">当前为游客模式：只能查看“大块头蛋”。输入管理员密码后才能编辑并查看其他内容。</div>
-<div class="public-tip" id="publicTip">👀 游客模式：当前仅开放“大块头蛋”查看。</div>
-<div class="card hidden" id="petCard">
+<div class="readonly-tip hidden" id="readonlyTip">当前为只读模式，只能查看。如需编辑请输入管理员密码解锁。</div>
+<div class="card" id="petCard">
     <div class="section-title" onclick="toggleSection('petCard')">
         <h2>我的精灵列表</h2><span class="arrow">▼</span>
     </div>
@@ -124,18 +148,35 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     </table>
     </div>
 </div>
-
 <div class="card" id="eggCard">
     <div class="section-title" onclick="toggleSection('eggCard')">
         <h2>大块头蛋</h2><span class="arrow">▼</span>
     </div>
     <div class="collapse-body">
+    <div class="filter-bar">
+        <label>加成筛选：</label>
+        <select id="filterBonus" onchange="loadEggs()">
+            <option value="">全部</option>
+        </select>
+        <label>蛋重筛选：</label>
+        <select id="filterWeight" onchange="loadEggs()">
+            <option value="">全部</option>
+        </select>
+        <button class="btn" onclick="resetEggFilter()">重置筛选</button>
+        <span id="eggCountTip" style="font-size:13px;color:#888;margin-left:auto;"></span>
+    </div>
+    <div class="add-row hidden" id="eggParseBar">
+        <input id="eggParseText" placeholder="快速录入：输入一段描述自动解析，如&quot;火神蛋 攻击+5% 3kg&quot;" style="flex:2;min-width:240px;">
+        <button class="btn btn-primary" onclick="parseEgg()">解析录入</button>
+    </div>
     <div class="add-row hidden" id="eggAddBar">
-        <input id="eggInfo" placeholder="录入大块头蛋信息" style="flex:3;">
+        <input id="eggInfo" placeholder="蛋信息（如：火神蛋）">
+        <input id="eggBonus" placeholder="加成（如：攻击+5%）">
+        <input id="eggWeight" placeholder="蛋重（如：3kg）">
         <button class="btn btn-primary" onclick="addEgg()">新增</button>
     </div>
     <table>
-        <thead><tr><th>大块头蛋记录</th><th id="eggOpHead" class="hidden">操作</th></tr></thead>
+        <thead><tr><th>蛋信息</th><th>加成</th><th>蛋重</th><th>数量</th><th id="eggOpHead" class="hidden">操作</th></tr></thead>
         <tbody id="eggTableBody"></tbody>
     </table>
     <div class="import-area hidden" id="importArea">
@@ -145,8 +186,7 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     </div>
     </div>
 </div>
-
-<div class="card hidden" id="settingsCard">
+<div class="card">
     <h2>网页外观设置</h2>
     <div class="settings">
         <label>背景图片：</label>
@@ -155,13 +195,8 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
         <span id="bgStatus" style="font-size:13px;color:#666;"></span>
     </div>
 </div>
-
 <script>
 let isAdmin = false;
-function enterMain(){document.getElementById("mainPage").scrollIntoView({behavior:"smooth"});}
-function backToLanding(){document.getElementById("landing").scrollIntoView({behavior:"smooth"});}
-function setPublicView(){document.getElementById("petCard").classList.add("hidden");document.getElementById("settingsCard").classList.add("hidden");document.getElementById("publicTip").classList.remove("hidden");}
-function setAdminView(){document.getElementById("petCard").classList.remove("hidden");document.getElementById("settingsCard").classList.remove("hidden");document.getElementById("publicTip").classList.add("hidden");}
 async function api(url, method="GET", body=null){
     let opt = {method, headers:{"Content-Type":"application/json"}};
     if(body) opt.body = JSON.stringify(body);
@@ -175,8 +210,7 @@ async function login(){
         isAdmin = true;
         document.getElementById("authStatus").textContent = "✅ 已解锁编辑";
         document.getElementById("readonlyTip").classList.add("hidden");
-        setAdminView();
-        ["logoutBtn","exportBtn","petAddBar","eggAddBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
+        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
         document.getElementById("pwdInput").classList.add("hidden");
         loadPets(); loadEggs();
     } else alert("密码错误");
@@ -187,16 +221,11 @@ async function checkAuth(){
     if(r.authed){
         isAdmin = true;
         document.getElementById("authStatus").textContent = "✅ 已解锁编辑";
-        setAdminView();
-        ["logoutBtn","exportBtn","petAddBar","eggAddBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
+        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
         document.getElementById("pwdInput").classList.add("hidden");
-    } else {
-        document.getElementById("readonlyTip").classList.remove("hidden");
-        setPublicView();
-    }
+    } else document.getElementById("readonlyTip").classList.remove("hidden");
 }
 async function loadPets(){
-    if(!isAdmin) return;
     let arr = await api("/api/pets");
     let tb = document.getElementById("petTableBody"); tb.innerHTML = "";
     arr.forEach((item,idx)=>{
@@ -228,27 +257,102 @@ async function delPet(idx){
     let r = await api("/api/pets/del","POST",{index:idx});
     if(r.ok) loadPets();
 }
+
+/* ========== 大块头蛋：筛选 + 结构化 + 解析录入 ========== */
+
+function updateEggFilterOptions(arr){
+    /* 从数据中提取不重复的加成和蛋重，更新筛选下拉框，保留当前选中值 */
+    let bonusSelect = document.getElementById("filterBonus");
+    let weightSelect = document.getElementById("filterWeight");
+    let curB = bonusSelect.value;
+    let curW = weightSelect.value;
+
+    let bonuses = [...new Set(arr.map(i=>i.bonus).filter(b=>b))];
+    let weights = [...new Set(arr.map(i=>i.weight).filter(w=>w))];
+
+    bonusSelect.innerHTML = '<option value="">全部</option>' + bonuses.map(b=>`<option value="${b}">${b}</option>`).join('');
+    weightSelect.innerHTML = '<option value="">全部</option>' + weights.map(w=>`<option value="${w}">${w}</option>`).join('');
+
+    bonusSelect.value = curB;
+    weightSelect.value = curW;
+}
+
+function resetEggFilter(){
+    document.getElementById("filterBonus").value = "";
+    document.getElementById("filterWeight").value = "";
+    loadEggs();
+}
+
 async function loadEggs(){
     let arr = await api("/api/big_eggs");
+    let filterB = document.getElementById("filterBonus").value;
+    let filterW = document.getElementById("filterWeight").value;
+
+    /* 更新筛选下拉选项（基于全量数据） */
+    updateEggFilterOptions(arr);
+
+    /* 应用筛选 */
+    let filtered = arr.filter(item => {
+        if(filterB && item.bonus !== filterB) return false;
+        if(filterW && item.weight !== filterW) return false;
+        return true;
+    });
+
+    /* 统计提示 */
+    let totalCount = filtered.reduce((s, i)=>s + (i.count||1), 0);
+    document.getElementById("eggCountTip").textContent =
+        `共 ${filtered.length} 种 / ${totalCount} 个`;
+
     let tb = document.getElementById("eggTableBody"); tb.innerHTML = "";
-    arr.forEach((item,idx)=>{
+    arr.forEach((item, origIdx)=>{
+        /* 筛选后仍用原始下标做删除，保证后端定位准确 */
+        if(filterB && item.bonus !== filterB) return;
+        if(filterW && item.weight !== filterW) return;
         let tr = document.createElement("tr");
-        let op = isAdmin ? `<td><button class="btn btn-danger" onclick="delEgg(${idx})">删除</button></td>` : "";
-        tr.innerHTML = `<td>${item}</td>${op}`; tb.appendChild(tr);
+        let op = isAdmin ? `<td><button class="btn btn-danger" onclick="delEgg(${origIdx})">删除</button></td>` : "";
+        tr.innerHTML = `<td>${item.info}</td><td>${item.bonus||'<span style="color:#aaa;">-</span>'}</td><td>${item.weight||'<span style="color:#aaa;">-</span>'}</td><td><span class="count-badge">${item.count||1}</span></td>${op}`;
+        tb.appendChild(tr);
     });
 }
+
 async function addEgg(){
     if(!isAdmin) return;
     let info = document.getElementById("eggInfo").value.trim();
-    if(!info) return;
-    let r = await api("/api/egg/add","POST",{data:info});
-    if(r.ok){ document.getElementById("eggInfo").value=""; loadEggs(); }
+    let bonus = document.getElementById("eggBonus").value.trim();
+    let weight = document.getElementById("eggWeight").value.trim();
+    if(!info){alert("蛋信息不能为空");return;}
+    let r = await api("/api/egg/add","POST",{info,bonus,weight});
+    if(r.ok){
+        document.getElementById("eggInfo").value="";
+        document.getElementById("eggBonus").value="";
+        document.getElementById("eggWeight").value="";
+        loadEggs();
+    }
 }
+
+async function parseEgg(){
+    if(!isAdmin) return;
+    let text = document.getElementById("eggParseText").value.trim();
+    if(!text){alert("请输入描述文本");return;}
+    let r = await api("/api/egg/parse","POST",{text});
+    if(r.ok){
+        let p = r.parsed;
+        alert(`解析成功并录入：\n蛋信息：${p.info}\n加成：${p.bonus||"（未识别）"}\n蛋重：${p.weight||"（未识别）"}`);
+        document.getElementById("eggParseText").value="";
+        loadEggs();
+    } else {
+        alert("解析失败：" + (r.msg||""));
+    }
+}
+
 async function delEgg(idx){
-    if(!isAdmin||!confirm("确定删除？")) return;
+    if(!isAdmin||!confirm("确定删除该蛋记录？")) return;
     let r = await api("/api/egg/del","POST",{index:idx});
     if(r.ok) loadEggs();
 }
+
+/* ========== 以下为原有通用功能 ========== */
+
 function toggleSection(id){
     const card=document.getElementById(id);
     card.classList.toggle("collapsed");
@@ -276,13 +380,11 @@ function changeBackground(input){
 }
 function applyBackground(url){
     document.body.style.backgroundImage=`url("${url}")`;
-    document.getElementById("landing").style.backgroundImage=`url("${url}")`;
     document.getElementById("bgStatus").textContent="已使用自定义背景";
 }
 function clearBackground(){
     localStorage.removeItem("pageBackground");
     document.body.style.backgroundImage="";
-    document.getElementById("landing").style.backgroundImage="";
     document.getElementById("bgStatus").textContent="已恢复默认背景";
 }
 function restoreBackground(){
@@ -300,7 +402,7 @@ async function importData(){
     if(r.ok){alert("恢复成功");loadPets();loadEggs();}
     else alert("恢复失败："+r.msg);
 }
-window.onload = ()=>{ setPublicView(); checkAuth(); loadPets(); loadEggs(); restoreBackground(); setTimeout(restoreCollapse,100); };
+window.onload = ()=>{ checkAuth(); loadPets(); loadEggs(); restoreBackground(); setTimeout(restoreCollapse,100); };
 </script>
 </body>
 </html>
@@ -329,8 +431,6 @@ def check():
 
 @app.route("/api/pets")
 def api_pets():
-    if not require_admin():
-        return jsonify({"ok": False, "msg": "无权限"}), 403
     return jsonify(load_data()["pets"])
 
 @app.route("/api/big_eggs")
@@ -339,8 +439,6 @@ def api_eggs():
 
 @app.route("/api/export")
 def export_data():
-    if not require_admin():
-        return jsonify({"ok": False, "msg": "无权限"}), 403
     d = load_data()
     return Response(
         json.dumps(d, ensure_ascii=False, indent=2),
@@ -355,6 +453,8 @@ def import_data():
     try:
         j = request.get_json()
         if "pets" in j and "big_eggs" in j:
+            # 导入时也做一次格式迁移，兼容旧备份
+            j, _ = migrate_eggs(j)
             save_data(j)
             return jsonify({"ok": True})
         return jsonify({"ok": False, "msg": "文件格式不对"})
@@ -386,15 +486,99 @@ def pet_del():
         save_data(d)
     return jsonify({"ok": True})
 
+# ========== 大块头蛋：结构化新增（自动合并） ==========
 @app.route("/api/egg/add", methods=["POST"])
 def egg_add():
     if not require_admin():
         return jsonify({"ok": False}), 403
     j = request.get_json()
+    info = j.get("info", "").strip()
+    bonus = j.get("bonus", "").strip()
+    weight = j.get("weight", "").strip()
+    if not info:
+        return jsonify({"ok": False, "msg": "蛋信息不能为空"}), 400
     d = load_data()
-    d["big_eggs"].append(j["data"])
+    idx = find_egg_index(d, info, bonus, weight)
+    if idx >= 0:
+        # 三者相同 -> 合并，数量+1
+        d["big_eggs"][idx]["count"] = d["big_eggs"][idx].get("count", 1) + 1
+    else:
+        d["big_eggs"].append({"info": info, "bonus": bonus, "weight": weight, "count": 1})
     save_data(d)
     return jsonify({"ok": True})
+
+# ========== 大块头蛋：自然语言解析录入 ==========
+@app.route("/api/egg/parse", methods=["POST"])
+def egg_parse():
+    if not require_admin():
+        return jsonify({"ok": False}), 403
+    j = request.get_json()
+    text = j.get("text", "").strip()
+    if not text:
+        return jsonify({"ok": False, "msg": "文本不能为空"}), 400
+
+    work = text
+
+    # ---- 1. 解析蛋重 ----
+    weight = ""
+    # 优先匹配带前缀的：蛋重3kg / 重量：5千克 / 重2.5kg
+    wm = re.search(r'(?:蛋重|重量|重)\s*[：:]?\s*(\d+(?:\.\d+)?)\s*(kg|千克|公斤|克|g)', work, re.IGNORECASE)
+    if not wm:
+        # 退化为纯数字+单位
+        wm = re.search(r'(\d+(?:\.\d+)?)\s*(kg|千克|公斤|克|g)', work, re.IGNORECASE)
+    if wm:
+        num_m = re.search(r'(\d+(?:\.\d+)?)', wm.group(0))
+        unit_m = re.search(r'(kg|千克|公斤|克|g)', wm.group(0), re.IGNORECASE)
+        if num_m and unit_m:
+            num = num_m.group(1)
+            unit = unit_m.group(1).lower()
+            if unit in ("千克", "公斤"):
+                unit = "kg"
+            elif unit == "克":
+                unit = "g"
+            weight = f"{num}{unit}"
+        work = work[:wm.start()] + work[wm.end():]
+
+    # ---- 2. 解析加成 ----
+    bonus = ""
+    # 模式A：属性+数值，如 "攻击+5%"、"魔攻+10"、"速度＋3%"
+    # 负向后行断言 (?<!蛋) 避免把"火神蛋""魔力猫蛋"等蛋名误判为属性
+    bm = re.search(r'([\u4e00-\u9fa5A-Za-z]{1,8})(?<!蛋)\s*[+＋]\s*(\d+(?:\.\d+)?)\s*%?', work)
+    if bm:
+        bonus = bm.group(0).strip()
+        work = work[:bm.start()] + work[bm.end():]
+    else:
+        # 模式B：纯数值加成，如 "+5%"、"＋10%"
+        bm = re.search(r'[+＋]\s*(\d+(?:\.\d+)?)\s*%', work)
+        if bm:
+            bonus = bm.group(0).strip()
+            work = work[:bm.start()] + work[bm.end():]
+        else:
+            # 模式C："加成：xxx"
+            bm = re.search(r'加成\s*[：:]?\s*(\S+)', work)
+            if bm:
+                bonus = bm.group(1).strip()
+                work = work[:bm.start()] + work[bm.end():]
+
+    # ---- 3. 剩余文本作为蛋信息，清理首尾标点和多余空格 ----
+    info = work.strip()
+    info = re.sub(r'^[，,。.、\s：:；;]+', '', info)
+    info = re.sub(r'[，,。.、\s：:；;]+$', '', info)
+    info = re.sub(r'\s+', '', info)
+
+    if not info:
+        return jsonify({"ok": False, "msg": "无法从文本中识别蛋信息，请检查输入格式"}), 400
+
+    # ---- 4. 录入（自动合并） ----
+    d = load_data()
+    idx = find_egg_index(d, info, bonus, weight)
+    if idx >= 0:
+        d["big_eggs"][idx]["count"] = d["big_eggs"][idx].get("count", 1) + 1
+    else:
+        d["big_eggs"].append({"info": info, "bonus": bonus, "weight": weight, "count": 1})
+    save_data(d)
+
+    return jsonify({"ok": True, "parsed": {"info": info, "bonus": bonus, "weight": weight}})
 
 @app.route("/api/egg/del", methods=["POST"])
 def egg_del():
