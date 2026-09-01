@@ -9,6 +9,13 @@ app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 # 密码优先读环境变量，部署后在Render后台设置，更安全
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123456")
 DATA_FILE = "pet_data.json"
+# 允许的加成类型（下拉固定选项）
+ALLOWED_BONUS = ["物攻", "魔攻", "生命", "速度"]
+# 重量上限
+MAX_WEIGHT = 100
+# 加成属性词白名单（自然语言解析时用于识别加成字段）
+ATTR_WORDS = ["物攻", "魔攻", "速度", "防御", "精力", "HP", "hp",
+               "命中", "闪避", "暴击", "抗暴", "物防", "特防", "魔抗"]
 # ==========================
 
 def migrate_eggs(d):
@@ -166,13 +173,19 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
         <span id="eggCountTip" style="font-size:13px;color:#888;margin-left:auto;"></span>
     </div>
     <div class="add-row hidden" id="eggParseBar">
-        <input id="eggParseText" placeholder="快速录入：输入一段描述自动解析，如&quot;火神蛋 攻击+5% 3kg&quot;" style="flex:2;min-width:240px;">
+        <input id="eggParseText" placeholder="快速录入：输入一段描述自动解析，如&quot;火神蛋 物攻 85&quot;" style="flex:2;min-width:240px;">
         <button class="btn btn-primary" onclick="parseEgg()">解析录入</button>
     </div>
     <div class="add-row hidden" id="eggAddBar">
         <input id="eggInfo" placeholder="蛋信息（如：火神蛋）">
-        <input id="eggBonus" placeholder="加成（如：攻击+5%）">
-        <input id="eggWeight" placeholder="蛋重（如：3kg）">
+        <select id="eggBonus">
+            <option value="">加成（可选）</option>
+            <option value="物攻">物攻</option>
+            <option value="魔攻">魔攻</option>
+            <option value="生命">生命</option>
+            <option value="速度">速度</option>
+        </select>
+        <input id="eggWeight" placeholder="重量(0-100)" type="number" min="0" max="100" step="0.1">
         <button class="btn btn-primary" onclick="addEgg()">新增</button>
     </div>
     <table>
@@ -310,7 +323,11 @@ async function loadEggs(){
         if(filterW && item.weight !== filterW) return;
         let tr = document.createElement("tr");
         let op = isAdmin ? `<td><button class="btn btn-danger" onclick="delEgg(${origIdx})">删除</button></td>` : "";
-        tr.innerHTML = `<td>${item.info}</td><td>${item.bonus||'<span style="color:#aaa;">-</span>'}</td><td>${item.weight||'<span style="color:#aaa;">-</span>'}</td><td><span class="count-badge">${item.count||1}</span></td>${op}`;
+        let cnt = item.count||1;
+        let countCell = isAdmin
+            ? `<td style="white-space:nowrap;"><button class="btn" onclick="changeEggCount(${origIdx},-1,${cnt})" style="padding:4px 10px;min-width:30px;">−</button> <span class="count-badge">${cnt}</span> <button class="btn" onclick="changeEggCount(${origIdx},1)" style="padding:4px 10px;min-width:30px;">+</button></td>`
+            : `<td><span class="count-badge">${cnt}</span></td>`;
+        tr.innerHTML = `<td>${item.info}</td><td>${item.bonus||'<span style="color:#aaa;">-</span>'}</td><td>${item.weight||'<span style="color:#aaa;">-</span>'}</td>${countCell}${op}`;
         tb.appendChild(tr);
     });
 }
@@ -318,15 +335,21 @@ async function loadEggs(){
 async function addEgg(){
     if(!isAdmin) return;
     let info = document.getElementById("eggInfo").value.trim();
-    let bonus = document.getElementById("eggBonus").value.trim();
+    let bonus = document.getElementById("eggBonus").value;
     let weight = document.getElementById("eggWeight").value.trim();
     if(!info){alert("蛋信息不能为空");return;}
+    if(weight !== ""){
+        let w = Number(weight);
+        if(isNaN(w) || w < 0 || w > 100){alert("重量必须是 0-100 之间的数字");return;}
+    }
     let r = await api("/api/egg/add","POST",{info,bonus,weight});
     if(r.ok){
         document.getElementById("eggInfo").value="";
         document.getElementById("eggBonus").value="";
         document.getElementById("eggWeight").value="";
         loadEggs();
+    } else {
+        alert("新增失败：" + (r.msg||""));
     }
 }
 
@@ -343,6 +366,17 @@ async function parseEgg(){
     } else {
         alert("解析失败：" + (r.msg||""));
     }
+}
+
+async function changeEggCount(idx, delta, curCount){
+    if(!isAdmin) return;
+    /* 减到 0 时确认是否删除 */
+    if(delta === -1 && curCount !== undefined && curCount <= 1){
+        if(!confirm("数量已为 1，再减将删除该记录，确定？")) return;
+    }
+    let r = await api("/api/egg/count","POST",{index:idx,delta});
+    if(r.ok) loadEggs();
+    else alert("操作失败：" + (r.msg||""));
 }
 
 async function delEgg(idx){
@@ -494,7 +528,20 @@ def egg_add():
     j = request.get_json()
     info = j.get("info", "").strip()
     bonus = j.get("bonus", "").strip()
-    weight = j.get("weight", "").strip()
+    weight_raw = j.get("weight", "")
+    # 重量校验：必须是 0-MAX_WEIGHT 的数字，允许为空；统一存为字符串
+    weight = ""
+    if weight_raw != "" and weight_raw is not None:
+        try:
+            w = float(weight_raw)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "msg": "重量必须是数字"}), 400
+        if w < 0 or w > MAX_WEIGHT:
+            return jsonify({"ok": False, "msg": "重量必须在 0-%d 之间" % MAX_WEIGHT}), 400
+        weight = str(int(w)) if w == int(w) else str(w)
+    # 加成校验：必须在允许列表中或为空
+    if bonus and bonus not in ALLOWED_BONUS:
+        return jsonify({"ok": False, "msg": "加成类型不合法"}), 400
     if not info:
         return jsonify({"ok": False, "msg": "蛋信息不能为空"}), 400
     d = load_data()
@@ -504,6 +551,28 @@ def egg_add():
         d["big_eggs"][idx]["count"] = d["big_eggs"][idx].get("count", 1) + 1
     else:
         d["big_eggs"].append({"info": info, "bonus": bonus, "weight": weight, "count": 1})
+    save_data(d)
+    return jsonify({"ok": True})
+
+# ========== 大块头蛋：数量手动加减 ==========
+@app.route("/api/egg/count", methods=["POST"])
+def egg_count():
+    if not require_admin():
+        return jsonify({"ok": False}), 403
+    j = request.get_json()
+    idx = j.get("index")
+    delta = j.get("delta", 0)
+    d = load_data()
+    if idx is None or not (0 <= idx < len(d["big_eggs"])):
+        return jsonify({"ok": False, "msg": "记录不存在"}), 400
+    if delta not in (-1, 1):
+        return jsonify({"ok": False, "msg": "delta 必须是 1 或 -1"}), 400
+    egg = d["big_eggs"][idx]
+    new_count = egg.get("count", 1) + delta
+    if new_count <= 0:
+        del d["big_eggs"][idx]
+    else:
+        egg["count"] = new_count
     save_data(d)
     return jsonify({"ok": True})
 
@@ -519,46 +588,28 @@ def egg_parse():
 
     work = text
 
-    # ---- 1. 解析蛋重 ----
-    weight = ""
-    # 优先匹配带前缀的：蛋重3kg / 重量：5千克 / 重2.5kg
-    wm = re.search(r'(?:蛋重|重量|重)\s*[：:]?\s*(\d+(?:\.\d+)?)\s*(kg|千克|公斤|克|g)', work, re.IGNORECASE)
-    if not wm:
-        # 退化为纯数字+单位
-        wm = re.search(r'(\d+(?:\.\d+)?)\s*(kg|千克|公斤|克|g)', work, re.IGNORECASE)
-    if wm:
-        num_m = re.search(r'(\d+(?:\.\d+)?)', wm.group(0))
-        unit_m = re.search(r'(kg|千克|公斤|克|g)', wm.group(0), re.IGNORECASE)
-        if num_m and unit_m:
-            num = num_m.group(1)
-            unit = unit_m.group(1).lower()
-            if unit in ("千克", "公斤"):
-                unit = "kg"
-            elif unit == "克":
-                unit = "g"
-            weight = f"{num}{unit}"
-        work = work[:wm.start()] + work[wm.end():]
-
-    # ---- 2. 解析加成 ----
+    # ---- 1. 解析加成：从固定选项中匹配关键词 ----
     bonus = ""
-    # 模式A：属性+数值，如 "攻击+5%"、"魔攻+10"、"速度＋3%"
-    # 负向后行断言 (?<!蛋) 避免把"火神蛋""魔力猫蛋"等蛋名误判为属性
-    bm = re.search(r'([\u4e00-\u9fa5A-Za-z]{1,8})(?<!蛋)\s*[+＋]\s*(\d+(?:\.\d+)?)\s*%?', work)
-    if bm:
-        bonus = bm.group(0).strip()
-        work = work[:bm.start()] + work[bm.end():]
-    else:
-        # 模式B：纯数值加成，如 "+5%"、"＋10%"
-        bm = re.search(r'[+＋]\s*(\d+(?:\.\d+)?)\s*%', work)
-        if bm:
-            bonus = bm.group(0).strip()
-            work = work[:bm.start()] + work[bm.end():]
-        else:
-            # 模式C："加成：xxx"
-            bm = re.search(r'加成\s*[：:]?\s*(\S+)', work)
-            if bm:
-                bonus = bm.group(1).strip()
-                work = work[:bm.start()] + work[bm.end():]
+    for kw in ALLOWED_BONUS:
+        if kw in work:
+            bonus = kw
+            work = work.replace(kw, "", 1)
+            break
+
+    # ---- 2. 解析重量：纯数字 0-MAX_WEIGHT，可带"蛋重/重量/重"前缀 ----
+    weight = ""
+    wm = re.search(r'(?:蛋重|重量|重)\s*[：:]?\s*(\d+(?:\.\d+)?)', work)
+    if not wm:
+        # 不带前缀：直接找数字（加成已是纯文字，不会冲突）
+        wm = re.search(r'(\d+(?:\.\d+)?)', work)
+    if wm:
+        try:
+            w = float(wm.group(1))
+            if 0 <= w <= MAX_WEIGHT:
+                weight = str(int(w)) if w == int(w) else str(w)
+                work = work[:wm.start()] + work[wm.end():]
+        except (ValueError, TypeError):
+            pass
 
     # ---- 3. 剩余文本作为蛋信息，清理首尾标点和多余空格 ----
     info = work.strip()
