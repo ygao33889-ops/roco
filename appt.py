@@ -161,6 +161,10 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     </div>
     <div class="collapse-body">
     <div class="filter-bar">
+        <label>精灵筛选：</label>
+        <select id="filterInfo" onchange="loadEggs()">
+            <option value="">全部</option>
+        </select>
         <label>加成筛选：</label>
         <select id="filterBonus" onchange="loadEggs()">
             <option value="">全部</option>
@@ -274,23 +278,29 @@ async function delPet(idx){
 /* ========== 大块头蛋：筛选 + 结构化 + 解析录入 ========== */
 
 function updateEggFilterOptions(arr){
-    /* 从数据中提取不重复的加成和蛋重，更新筛选下拉框，保留当前选中值 */
+    /* 从数据中提取不重复的精灵、加成和蛋重，更新筛选下拉框，保留当前选中值 */
+    let infoSelect = document.getElementById("filterInfo");
     let bonusSelect = document.getElementById("filterBonus");
     let weightSelect = document.getElementById("filterWeight");
+    let curI = infoSelect.value;
     let curB = bonusSelect.value;
     let curW = weightSelect.value;
 
+    let infos = [...new Set(arr.map(i=>i.info).filter(v=>v))];
     let bonuses = [...new Set(arr.map(i=>i.bonus).filter(b=>b))];
     let weights = [...new Set(arr.map(i=>i.weight).filter(w=>w))];
 
+    infoSelect.innerHTML = '<option value="">全部</option>' + infos.map(v=>`<option value="${v}">${v}</option>`).join('');
     bonusSelect.innerHTML = '<option value="">全部</option>' + bonuses.map(b=>`<option value="${b}">${b}</option>`).join('');
     weightSelect.innerHTML = '<option value="">全部</option>' + weights.map(w=>`<option value="${w}">${w}</option>`).join('');
 
+    infoSelect.value = curI;
     bonusSelect.value = curB;
     weightSelect.value = curW;
 }
 
 function resetEggFilter(){
+    document.getElementById("filterInfo").value = "";
     document.getElementById("filterBonus").value = "";
     document.getElementById("filterWeight").value = "";
     loadEggs();
@@ -298,6 +308,7 @@ function resetEggFilter(){
 
 async function loadEggs(){
     let arr = await api("/api/big_eggs");
+    let filterI = document.getElementById("filterInfo").value;
     let filterB = document.getElementById("filterBonus").value;
     let filterW = document.getElementById("filterWeight").value;
 
@@ -306,6 +317,7 @@ async function loadEggs(){
 
     /* 应用筛选 */
     let filtered = arr.filter(item => {
+        if(filterI && item.info !== filterI) return false;
         if(filterB && item.bonus !== filterB) return false;
         if(filterW && item.weight !== filterW) return false;
         return true;
@@ -319,6 +331,7 @@ async function loadEggs(){
     let tb = document.getElementById("eggTableBody"); tb.innerHTML = "";
     arr.forEach((item, origIdx)=>{
         /* 筛选后仍用原始下标做删除，保证后端定位准确 */
+        if(filterI && item.info !== filterI) return;
         if(filterB && item.bonus !== filterB) return;
         if(filterW && item.weight !== filterW) return;
         let tr = document.createElement("tr");
