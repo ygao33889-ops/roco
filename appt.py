@@ -3,39 +3,35 @@ import json
 import os
 
 app = Flask(__name__)
-# 必须设置密钥，session才能正常工作
-app.secret_key = "lock_world_pet_ledger_2026_secret"
-# 管理员密码，自行修改
-ADMIN_PASSWORD = "123456"
-# 本地数据文件
-DATA_FILE = "pet_data.json"
+app.secret_key = os.environ.get("SECRET_KEY", os.urandom(24).hex())
 
-# ---------------------- 数据读写工具函数 ----------------------
-def load_data():
+# ========== 配置 ==========
+# 密码优先读环境变量，部署后在Render后台设置，更安全
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123456")
+DATA_FILE = "pet_data.json"
+# ==========================
+
+def init_data():
     if not os.path.exists(DATA_FILE):
-        default = {
-            "pets": [],
-            "big_eggs": []
-        }
-        save_data(default)
-        return default
-    with open(DATA_FILE, "r", encoding="utf‑8") as f:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"pets": [], "big_eggs": []}, f, ensure_ascii=False, indent=2)
+
+def load_data():
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf‑8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def save_data(d):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
 
-def require_admin():
-    return session.get("admin", False)
+init_data()
 
-# ---------------------- 前端HTML ----------------------
 HTML = '''
 <!DOCTYPE html>
-<html lang="zh‑CN">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
- <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>洛克王国世界 精灵台账</title>
 <style>
 *{box-sizing:border-box;font-family:"Microsoft Yahei",sans-serif;margin:0;padding:0;}
@@ -59,7 +55,8 @@ body::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.78);
 .settings{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;}
 .settings label{font-size:13px;color:#555;}
 .bg-preview{width:46px;height:30px;object-fit:cover;border-radius:5px;border:1px solid #ddd;}
- h1{text-align:center;color:#1a1a2e;margin-bottom:20px;}
+
+h1{text-align:center;color:#1a1a2e;margin-bottom:20px;}
 .card{background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.08);}
 .card h2{color:#16213e;margin-bottom:16px;font-size:20px;border-left:4px solid #0f3460;padding-left:10px;}
 .auth-bar{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:16px 20px;border-radius:12px;margin-bottom:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
@@ -104,7 +101,6 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
 
 <div class="readonly-tip hidden" id="readonlyTip">当前为游客模式：只能查看“大块头蛋”。输入管理员密码后才能编辑并查看其他内容。</div>
 <div class="public-tip" id="publicTip">👀 游客模式：当前仅开放“大块头蛋”查看。</div>
-
 <div class="card hidden" id="petCard">
     <div class="section-title" onclick="toggleSection('petCard')">
         <h2>我的精灵列表</h2><span class="arrow">▼</span>
@@ -164,16 +160,8 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
 let isAdmin = false;
 function enterMain(){document.getElementById("mainPage").scrollIntoView({behavior:"smooth"});}
 function backToLanding(){document.getElementById("landing").scrollIntoView({behavior:"smooth"});}
-function setPublicView(){
-    document.getElementById("petCard").classList.add("hidden");
-    document.getElementById("settingsCard").classList.add("hidden");
-    document.getElementById("publicTip").classList.remove("hidden");
-}
-function setAdminView(){
-    document.getElementById("petCard").classList.remove("hidden");
-    document.getElementById("settingsCard").classList.remove("hidden");
-    document.getElementById("publicTip").classList.add("hidden");
-}
+function setPublicView(){document.getElementById("petCard").classList.add("hidden");document.getElementById("settingsCard").classList.add("hidden");document.getElementById("publicTip").classList.remove("hidden");}
+function setAdminView(){document.getElementById("petCard").classList.remove("hidden");document.getElementById("settingsCard").classList.remove("hidden");document.getElementById("publicTip").classList.add("hidden");}
 async function api(url, method="GET", body=null){
     let opt = {method, headers:{"Content-Type":"application/json"}};
     if(body) opt.body = JSON.stringify(body);
@@ -193,10 +181,7 @@ async function login(){
         loadPets(); loadEggs();
     } else alert("密码错误");
 }
-async function logout(){
-    await api("/api/logout","POST");
-    location.reload();
-}
+async function logout(){ await api("/api/logout","POST"); location.reload(); }
 async function checkAuth(){
     let r = await api("/api/check");
     if(r.authed){
@@ -236,11 +221,7 @@ async function addPet(){
         });
     }
     let r = await api("/api/pets/add","POST",{name,sex,egg_group:eg,bonus,image});
-    if(r.ok){
-        ["petName","petEggGroup","petBonus"].forEach(id=>document.getElementById(id).value="");
-        document.getElementById("petImage").value="";
-        loadPets();
-    }
+    if(r.ok){ ["petName","petEggGroup","petBonus"].forEach(id=>document.getElementById(id).value=""); document.getElementById("petImage").value=""; loadPets(); }
 }
 async function delPet(idx){
     if(!isAdmin||!confirm("确定删除？")) return;
@@ -319,14 +300,7 @@ async function importData(){
     if(r.ok){alert("恢复成功");loadPets();loadEggs();}
     else alert("恢复失败："+r.msg);
 }
-window.onload = ()=>{
-    setPublicView();
-    checkAuth();
-    loadPets();
-    loadEggs();
-    restoreBackground();
-    setTimeout(restoreCollapse,100);
-};
+window.onload = ()=>{ setPublicView(); checkAuth(); loadPets(); loadEggs(); restoreBackground(); setTimeout(restoreCollapse,100); };
 </script>
 </body>
 </html>
@@ -371,7 +345,7 @@ def export_data():
     return Response(
         json.dumps(d, ensure_ascii=False, indent=2),
         mimetype="application/json",
-        headers={"Content‑Disposition": "attachment; filename=pet_backup.json"}
+        headers={"Content-Disposition": "attachment; filename=pet_backup.json"}
     )
 
 @app.route("/api/import", methods=["POST"])
@@ -386,6 +360,9 @@ def import_data():
         return jsonify({"ok": False, "msg": "文件格式不对"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
+
+def require_admin():
+    return session.get("admin", False)
 
 @app.route("/api/pets/add", methods=["POST"])
 def pet_add():
