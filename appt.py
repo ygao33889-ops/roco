@@ -49,13 +49,39 @@ def migrate_eggs(d):
 def init_data():
     if not os.path.exists(DATA_FILE):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"pets": [], "big_eggs": []}, f, ensure_ascii=False, indent=2)
+            json.dump({"pets": [], "big_eggs": [], "settings": {"background": "", "brightness": 100}}, f, ensure_ascii=False, indent=2)
+
+def migrate_settings(d):
+    """补全 settings 字段，返回 (迁移后数据, 是否变更)"""
+    changed = False
+    if "settings" not in d or not isinstance(d.get("settings"), dict):
+        d["settings"] = {"background": "", "brightness": 100}
+        changed = True
+    else:
+        s = d["settings"]
+        if "background" not in s:
+            s["background"] = ""
+            changed = True
+        if "brightness" not in s:
+            s["brightness"] = 100
+            changed = True
+        # 亮度范围校验
+        try:
+            b = int(s["brightness"])
+            if b < 10 or b > 100:
+                s["brightness"] = 100
+                changed = True
+        except (ValueError, TypeError):
+            s["brightness"] = 100
+            changed = True
+    return d, changed
 
 def load_data():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         d = json.load(f)
-    d, changed = migrate_eggs(d)
-    if changed:
+    d, changed1 = migrate_eggs(d)
+    d, changed2 = migrate_settings(d)
+    if changed1 or changed2:
         save_data(d)
     return d
 
@@ -83,7 +109,8 @@ HTML = '''
 <title>洛克王国世界 精灵台账</title>
 <style>
 *{box-sizing:border-box;font-family:"Microsoft Yahei",sans-serif;margin:0;padding:0;}
-body{max-width:1100px;margin:0 auto;padding:20px;background:#f0f2f5;min-height:100vh;background-size:cover;background-position:center;background-attachment:fixed;}
+body{max-width:1100px;margin:0 auto;padding:20px;background:#f0f2f5;min-height:100vh;}
+#bgLayer{position:fixed;inset:0;z-index:-2;background-size:cover;background-position:center;background-attachment:fixed;}
 body::before{content:"";position:fixed;inset:0;background:rgba(255,255,255,.78);z-index:-1;}
 .pet-img{width:64px;height:64px;object-fit:contain;border-radius:10px;background:#f7f8fb;border:1px solid #eee;}
 .pet-card{display:flex;align-items:center;gap:14px;}
@@ -123,6 +150,7 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
 </style>
 </head>
 <body>
+<div id="bgLayer"></div>
 <h1>洛克王国世界 精灵台账</h1>
 <div class="auth-bar">
     <span class="status" id="authStatus">🔒 只读模式</span>
@@ -203,13 +231,18 @@ input,select{padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:
     </div>
     </div>
 </div>
-<div class="card">
+<div class="card hidden" id="settingsCard">
     <h2>网页外观设置</h2>
     <div class="settings">
         <label>背景图片：</label>
         <input type="file" id="bgFile" accept="image/*" onchange="changeBackground(this)">
         <button class="btn" onclick="clearBackground()">恢复默认背景</button>
         <span id="bgStatus" style="font-size:13px;color:#666;"></span>
+    </div>
+    <div class="settings">
+        <label>外观亮度：</label>
+        <input type="range" id="brightnessRange" min="10" max="100" value="100" oninput="onBrightnessInput(this.value)" onchange="saveBrightness(this.value)" style="flex:1;max-width:300px;">
+        <span id="brightnessValue" style="font-size:13px;color:#555;min-width:40px;">100%</span>
     </div>
 </div>
 <script>
@@ -227,7 +260,7 @@ async function login(){
         isAdmin = true;
         document.getElementById("authStatus").textContent = "✅ 已解锁编辑";
         document.getElementById("readonlyTip").classList.add("hidden");
-        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
+        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea","settingsCard"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
         document.getElementById("pwdInput").classList.add("hidden");
         loadPets(); loadEggs();
     } else alert("密码错误");
@@ -238,7 +271,7 @@ async function checkAuth(){
     if(r.authed){
         isAdmin = true;
         document.getElementById("authStatus").textContent = "✅ 已解锁编辑";
-        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
+        ["logoutBtn","exportBtn","petAddBar","eggAddBar","eggParseBar","petOpHead","eggOpHead","importArea","settingsCard"].forEach(id=>document.getElementById(id).classList.remove("hidden"));
         document.getElementById("pwdInput").classList.add("hidden");
     } else document.getElementById("readonlyTip").classList.remove("hidden");
 }
@@ -415,28 +448,64 @@ function restoreCollapse(){
         }else body.style.maxHeight=body.scrollHeight+"px";
     });
 }
+/* ========== 外观设置（全局共享，存在后端） ========== */
+function applyBackground(url){
+    let layer = document.getElementById("bgLayer");
+    if(url){
+        layer.style.backgroundImage = 'url("' + url + '")';
+        document.getElementById("bgStatus").textContent = "已使用自定义背景";
+    } else {
+        layer.style.backgroundImage = "";
+        document.getElementById("bgStatus").textContent = "已恢复默认背景";
+    }
+}
+function applyBrightness(val){
+    let layer = document.getElementById("bgLayer");
+    layer.style.filter = "brightness(" + val + "%)";
+    document.getElementById("brightnessValue").textContent = val + "%";
+    document.getElementById("brightnessRange").value = val;
+}
+async function loadSettings(){
+    /* 页面加载时从后端获取全局外观设置并应用（所有人可见） */
+    try{
+        let s = await api("/api/settings");
+        applyBackground(s.background || "");
+        applyBrightness(s.brightness || 100);
+    }catch(e){ console.warn("加载外观设置失败", e); }
+}
 function changeBackground(input){
+    if(!isAdmin) return;
     const file=input.files[0];
     if(!file)return;
+    if(file.size > 3*1024*1024){alert("图片建议控制在 3MB 以内");return;}
     const reader=new FileReader();
-    reader.onload=e=>{
-        localStorage.setItem("pageBackground",e.target.result);
-        applyBackground(e.target.result);
+    reader.onload=async e=>{
+        let base64 = e.target.result;
+        let r = await api("/api/settings/update","POST",{background:base64});
+        if(r.ok){
+            applyBackground(base64);
+        } else alert("保存失败：" + (r.msg||""));
     };
     reader.readAsDataURL(file);
 }
-function applyBackground(url){
-    document.body.style.backgroundImage=`url("${url}")`;
-    document.getElementById("bgStatus").textContent="已使用自定义背景";
+async function clearBackground(){
+    if(!isAdmin) return;
+    if(!confirm("确定恢复默认背景？")) return;
+    let r = await api("/api/settings/update","POST",{background:""});
+    if(r.ok){
+        applyBackground("");
+        document.getElementById("bgFile").value = "";
+    }
 }
-function clearBackground(){
-    localStorage.removeItem("pageBackground");
-    document.body.style.backgroundImage="";
-    document.getElementById("bgStatus").textContent="已恢复默认背景";
+function onBrightnessInput(val){
+    /* 拖动滑块时实时预览，不保存 */
+    applyBrightness(val);
 }
-function restoreBackground(){
-    const bg=localStorage.getItem("pageBackground");
-    if(bg)applyBackground(bg);
+async function saveBrightness(val){
+    /* 松开滑块时保存到后端 */
+    if(!isAdmin) return;
+    let r = await api("/api/settings/update","POST",{brightness:parseInt(val)});
+    if(!r.ok) alert("亮度保存失败：" + (r.msg||""));
 }
 function exportData(){
     window.open("/api/export","_blank");
@@ -449,7 +518,7 @@ async function importData(){
     if(r.ok){alert("恢复成功");loadPets();loadEggs();}
     else alert("恢复失败："+r.msg);
 }
-window.onload = ()=>{ checkAuth(); loadPets(); loadEggs(); restoreBackground(); setTimeout(restoreCollapse,100); };
+window.onload = ()=>{ checkAuth(); loadPets(); loadEggs(); loadSettings(); setTimeout(restoreCollapse,100); };
 </script>
 </body>
 </html>
@@ -507,6 +576,35 @@ def import_data():
         return jsonify({"ok": False, "msg": "文件格式不对"})
     except Exception as e:
         return jsonify({"ok": False, "msg": str(e)})
+
+# ========== 外观设置（全局共享） ==========
+@app.route("/api/settings")
+def api_settings():
+    """公开接口：所有人都能读取当前外观设置"""
+    d = load_data()
+    return jsonify(d.get("settings", {"background": "", "brightness": 100}))
+
+@app.route("/api/settings/update", methods=["POST"])
+def api_settings_update():
+    """管理员接口：更新背景图和/或亮度，传入什么更新什么"""
+    if not require_admin():
+        return jsonify({"ok": False}), 403
+    j = request.get_json() or {}
+    d = load_data()
+    s = d["settings"]
+    if "background" in j:
+        s["background"] = j["background"]
+    if "brightness" in j:
+        try:
+            b = int(j["brightness"])
+            if 10 <= b <= 100:
+                s["brightness"] = b
+            else:
+                return jsonify({"ok": False, "msg": "亮度必须在 10-100 之间"}), 400
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "msg": "亮度必须是整数"}), 400
+    save_data(d)
+    return jsonify({"ok": True, "settings": s})
 
 def require_admin():
     return session.get("admin", False)
